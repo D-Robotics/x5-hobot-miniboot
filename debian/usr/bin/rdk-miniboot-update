@@ -1,0 +1,162 @@
+#!/bin/bash -e
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+
+if [ -f /etc/default/rdk-miniboot-update ]; then
+   . /etc/default/rdk-miniboot-update
+fi
+
+LOCAL_MODE=0
+if [ -n "$FIRMWARE_ROOT" ]; then
+   # Provided by environment
+   true
+elif [ -d /lib/firmware/rdk/miniboot ]; then
+   # Default firmware root exists
+   FIRMWARE_ROOT=/lib/firmware/rdk/miniboot
+fi
+
+FIRMWARE_RELEASE_STATUS=${FIRMWARE_RELEASE_STATUS:-default}
+FIRMWARE_IMAGE_DIR=${FIRMWARE_IMAGE_DIR:-${FIRMWARE_ROOT}/${FIRMWARE_RELEASE_STATUS}}
+
+EXIT_SUCCESS=0
+EXIT_FAILED=1
+
+die() {
+   echo "$@" >&2
+   exit ${EXIT_FAILED}
+}
+
+applyUpdate()
+{
+    [ -n "${MINIBOOT_UPDATE_IMAGE}" ] || die "No Miniboot image specified"
+    if [ -n "${MINIBOOT_UPDATE_IMAGE}" ]; then
+        [ -f "${MINIBOOT_UPDATE_IMAGE}" ] || die "Miniboot image \"${MINIBOOT_UPDATE_IMAGE}\" not found"
+    fi
+    image_size=`du -b ${MINIBOOT_UPDATE_IMAGE} | awk '{print $1}'`
+    magic_mumber=`od -N4 -t x1 ${MINIBOOT_UPDATE_IMAGE}|head -1|sed -e 's/0000000//g' -e 's/ //g'|tr -d '\n'`
+    if [ ${magic_mumber} != "41504946" ]; then
+        echo "The format of the miniboot image is incorrect."
+        echo "Please use the miniboot image file officially provided."
+        exit ${EXIT_FAILED}
+    fi
+
+    # Get partition size
+    partition_size=0x`cat /proc/mtd | grep mtd0 | awk '{print $2}'`
+
+    # The image file size needs to be greater than or equal to the partition size
+    _part_size=`printf %d ${partition_size}`
+    if [ ${_part_size} -lt ${image_size} ]; then
+        echo "The format of the miniboot image is incorrect."
+        echo "The miniboot image file size(${image_size}) greater than partition size(${_part_size})"
+        echo "Please use the miniboot image file officially provided."
+        exit ${EXIT_FAILED}
+    fi
+
+    echo "Start Update Miniboot("${MINIBOOT_UPDATE_IMAGE}")..."
+    echo "Please do not interrupt, restart and shut down during the upgrade process."
+
+    flash_opts=""
+    if [ "${SILENT_UPDATE}" = 1 ];then
+        flash_opts="-q"
+    fi
+
+    flash_erase ${flash_opts} /dev/mtd0 0 0
+    if [ $? -ne 0 ]; then
+        die "flash_erase /dev/mtd0 failed, dont reboot, please retry."
+    fi
+    nandwrite ${flash_opts} -p -N /dev/mtd0 ${MINIBOOT_UPDATE_IMAGE}
+    if [ $? -ne 0 ]; then
+        die "nandwrite /dev/mtd0 failed, dont reboot, please retry."
+    fi
+
+    sync
+    echo "=============================================="
+    echo "Update Miniboot Done.Please reboot to apply the update"
+    echo "=============================================="
+    exit 0
+}
+
+# Find latest applicable update version
+MINIBOOT_UPDATE_IMAGE=""
+MINIBOOT_UPDATE_VERSION=0
+getMinibootUpdateVersion()
+{
+   MINIBOOT_UPDATE_VERSION=0
+   match=".*/disk_nand_minimum_boot_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].img"
+   latest="$(find "${FIRMWARE_IMAGE_DIR}/" -maxdepth 1 -type f -follow -regex "${match}" | sort -r | head -n1)"
+   if [ -f "${latest}" ]; then
+      MINIBOOT_UPDATE_VERSION=$(basename "${latest}" | awk -F_ '{print $NF}' | sed 's/\.img//')
+      MINIBOOT_UPDATE_IMAGE="${latest}"
+   fi
+}
+
+checkDependencies()
+{
+    [ "$(id -u)" = "0" ] || die "* Must be run as root - try 'sudo rdk-miniboot-update'"
+
+    if ! command -v flash_erase > /dev/null; then
+        die "flash_erase not found. Try re-installing the mtd-utils package"
+    fi
+
+    if ! command -v nandwrite > /dev/null; then
+        die "nandwrite not found. Try installing the mtd-utils package."
+    fi
+
+    if [ ! -f "/proc/mtd" ]; then
+        die "NAND flash partition file \"/proc/mtd\" does not exist."
+    fi
+
+    if [ ! -c "/dev/mtd0" ]; then
+        die "NAND flash partition file \"/dev/mtd0\"does not exist."
+    fi
+}
+
+usage() {
+cat <<EOF
+rdk-miniboot-update [options]... [FILE]
+
+Miniboot update tool for the RDK.
+
+Options:
+    -f Install the given file instead of the latest applicable update
+    -h Display help text and exit
+    -l Returns the full path to the latest available miniboot image file according
+        to the FIRMWARE_RELEASE_STATUS and FIRMWARE_IMAGE_DIR settings.
+    -s Do not display flash progress messages
+
+Environment:
+Environment variables should be defined in /etc/default/rdk-miniboot-update
+
+FIRMWARE_RELEASE_STATUS
+
+Specifies the release status of the firmware to apply.
+
+EOF
+  exit ${EXIT_SUCCESS}
+}
+
+SILENT_UPDATE=0
+while getopts hlf:s option; do
+   case "${option}" in
+   f) MINIBOOT_UPDATE_IMAGE="${OPTARG}"
+      ;;
+   l)
+      getMinibootUpdateVersion
+      echo "${MINIBOOT_UPDATE_IMAGE}"
+      exit 0
+      ;;
+   s) SILENT_UPDATE=1
+      ;;
+   h) usage
+      ;;
+   *) echo "Unknown argument \"${option}\""
+      usage
+      ;;
+   esac
+done
+
+checkDependencies
+if [ -z "${MINIBOOT_UPDATE_IMAGE}" ];then
+    getMinibootUpdateVersion
+fi
+applyUpdate
