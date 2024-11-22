@@ -32,47 +32,86 @@ applyUpdate()
     if [ -n "${MINIBOOT_UPDATE_IMAGE}" ]; then
         [ -f "${MINIBOOT_UPDATE_IMAGE}" ] || die "Miniboot image \"${MINIBOOT_UPDATE_IMAGE}\" not found"
     fi
+
+    # Get image dile size
     image_size=`du -b ${MINIBOOT_UPDATE_IMAGE} | awk '{print $1}'`
-    magic_mumber=`od -N4 -t x1 ${MINIBOOT_UPDATE_IMAGE}|head -1|sed -e 's/0000000//g' -e 's/ //g'|tr -d '\n'`
-    if [ ${magic_mumber} != "41504946" ]; then
-        echo "The format of the miniboot image is incorrect."
-        echo "Please use the miniboot image file officially provided."
-        exit ${EXIT_FAILED}
-    fi
 
     # Get partition size
     partition_size=0x`cat /proc/mtd | grep mtd0 | awk '{print $2}'`
+    partition_size_1=0x`cat /proc/mtd | grep mtd1 | awk '{print $2}'`
 
     # The image file size needs to be greater than or equal to the partition size
     _part_size=`printf %d ${partition_size}`
+    _part_size_1=`printf %d ${partition_size_1}`
+
+    echo miniboot=${_part_size} ubootenv=${_part_size_1} img=${image_size}
+
     if [ ${_part_size} -lt ${image_size} ]; then
-        echo "The format of the miniboot image is incorrect."
-        echo "The miniboot image file size(${image_size}) greater than partition size(${_part_size})"
-        echo "Please use the miniboot image file officially provided."
-        exit ${EXIT_FAILED}
+        split -b ${_part_size} ${MINIBOOT_UPDATE_IMAGE} ${MINIBOOT_UPDATE_IMAGE}
+        image_size_ab=`du -b ${MINIBOOT_UPDATE_IMAGE}ab | awk '{print $1}'`
+        echo image_size_ab=${image_size_ab}
+        if [ ${_part_size_1} -eq ${image_size_ab} ]; then
+            echo "Start Update Miniboot("${MINIBOOT_UPDATE_IMAGE}")..."
+            echo "Please do not interrupt, restart and shut down during the upgrade process."
+
+            flash_opts=""
+            if [ "${SILENT_UPDATE}" = 1 ];then
+            flash_opts="-q"
+            fi
+
+            flash_erase ${flash_opts} /dev/mtd0 0 0
+            if [ $? -ne 0 ]; then
+            die "flash_erase /dev/mtd0 failed, dont reboot, please retry."
+            fi
+            nandwrite ${flash_opts} -p -N /dev/mtd0 ${MINIBOOT_UPDATE_IMAGE}aa
+            if [ $? -ne 0 ]; then
+            die "nandwrite /dev/mtd0 failed, dont reboot, please retry."
+            fi
+
+            flash_erase ${flash_opts} /dev/mtd1 0 0
+            if [ $? -ne 0 ]; then
+            die "flash_erase /dev/mtd1 failed, dont reboot, please retry."
+            fi
+            nandwrite ${flash_opts} -p -N /dev/mtd1 ${MINIBOOT_UPDATE_IMAGE}ab
+            if [ $? -ne 0 ]; then
+            die "nandwrite /dev/mtd1 failed, dont reboot, please retry."
+            fi
+
+            sync
+            echo "=============================================="
+            echo "Update Miniboot Done.Please reboot to apply the update"
+            echo "=============================================="
+        else
+            echo "The format of the miniboot image is incorrect."
+            echo "Please use the miniboot image file officially provided."
+            exit ${EXIT_FAILED}
+        fi
+        rm -rf ${MINIBOOT_UPDATE_IMAGE}aa
+        rm -rf ${MINIBOOT_UPDATE_IMAGE}ab
+    else
+        echo "Start Update Miniboot("${MINIBOOT_UPDATE_IMAGE}")..."
+        echo "Please do not interrupt, restart and shut down during the upgrade process."
+
+        flash_opts=""
+        if [ "${SILENT_UPDATE}" = 1 ];then
+            flash_opts="-q"
+        fi
+
+        flash_erase ${flash_opts} /dev/mtd0 0 0
+        if [ $? -ne 0 ]; then
+            die "flash_erase /dev/mtd0 failed, dont reboot, please retry."
+        fi
+        nandwrite ${flash_opts} -p -N /dev/mtd0 ${MINIBOOT_UPDATE_IMAGE}
+        if [ $? -ne 0 ]; then
+            die "nandwrite /dev/mtd0 failed, dont reboot, please retry."
+        fi
+
+        sync
+        echo "=============================================="
+        echo "Update Miniboot Done.Please reboot to apply the update"
+        echo "=============================================="
     fi
 
-    echo "Start Update Miniboot("${MINIBOOT_UPDATE_IMAGE}")..."
-    echo "Please do not interrupt, restart and shut down during the upgrade process."
-
-    flash_opts=""
-    if [ "${SILENT_UPDATE}" = 1 ];then
-        flash_opts="-q"
-    fi
-
-    flash_erase ${flash_opts} /dev/mtd0 0 0
-    if [ $? -ne 0 ]; then
-        die "flash_erase /dev/mtd0 failed, dont reboot, please retry."
-    fi
-    nandwrite ${flash_opts} -p -N /dev/mtd0 ${MINIBOOT_UPDATE_IMAGE}
-    if [ $? -ne 0 ]; then
-        die "nandwrite /dev/mtd0 failed, dont reboot, please retry."
-    fi
-
-    sync
-    echo "=============================================="
-    echo "Update Miniboot Done.Please reboot to apply the update"
-    echo "=============================================="
     exit 0
 }
 
