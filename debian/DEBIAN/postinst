@@ -1,3 +1,5 @@
 #!/bin/bash
+
+systemctl --no-reload enable auto_update_miniboot.service
 exit 0
 
