@@ -1,0 +1,11 @@
+# auto_update_miniboot.service
+[Unit]
+Description=Auto update miniboot
+After=getty.target system-getty.slice
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rdk-miniboot-update -a
+
+[Install]
+WantedBy=multi-user.target

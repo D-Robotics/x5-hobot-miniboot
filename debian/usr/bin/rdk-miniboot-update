@@ -26,12 +26,78 @@ die() {
    exit ${EXIT_FAILED}
 }
 
+get_uboot_date_iso() {
+    local img="$1"
+    local miniboot_version
+
+    miniboot_version=$(strings "$img" | grep -oPm1 'U-Boot 2022\.10.*\(\K[^)]+' | sed 's/ - / /')
+
+    if [[ -n "$miniboot_version" ]]; then
+        date -d "$miniboot_version" +%s 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+version_check() {
+    local nand_version
+    local img_version
+    local confirm
+
+    nand_version=$(get_uboot_date_iso /dev/mtd0)
+    img_version=$(get_uboot_date_iso "${MINIBOOT_UPDATE_IMAGE}")
+
+    echo "NAND miniboot version timestamp: $nand_version ($(date -d "@$nand_version" '+%Y-%m-%d %H:%M:%S'))"
+    echo "IMG miniboot version timestamp: $img_version ($(date -d "@$img_version" '+%Y-%m-%d %H:%M:%S'))"
+
+    if [[ -z "$nand_version" || -z "$img_version" ]]; then
+        echo "Failed to parse version info"
+        return 1
+    fi
+
+    if (( img_version > nand_version )); then
+        echo "Image is newer, update needed"
+        return 0
+    else
+        echo "Image is not newer(⚠️  Current version may have hardware issues.)"
+        echo "Continue update anyway? [y/N] (5s to respond): "
+        if read -t 5 -r confirm; then
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                echo "Proceeding with update..."
+                return 0
+            else
+                echo "Update aborted by user."
+                return 1
+            fi
+        else
+            echo "No input detected. Update aborted."
+            return 1
+        fi
+    fi
+}
+
+wrong_version_check() {
+    local wrong_nand_version=1747897291
+    local nand_version
+
+    nand_version=$(get_uboot_date_iso /dev/mtd0)
+
+    echo "NAND miniboot version timestamp: $nand_version ($(date -d "@$nand_version" '+%Y-%m-%d %H:%M:%S'))"
+
+    if [[ "$nand_version" != "$wrong_nand_version" ]]; then
+        echo "nand_version (timestamp): $nand_version is not the known wrong version, skipping auto update"
+        return 1
+    fi
+}
+
 applyUpdate()
 {
     [ -n "${MINIBOOT_UPDATE_IMAGE}" ] || die "No Miniboot image specified"
     if [ -n "${MINIBOOT_UPDATE_IMAGE}" ]; then
         [ -f "${MINIBOOT_UPDATE_IMAGE}" ] || die "Miniboot image \"${MINIBOOT_UPDATE_IMAGE}\" not found"
     fi
+
+    version_check
 
     # Get image dile size
     image_size=`du -b ${MINIBOOT_UPDATE_IMAGE} | awk '{print $1}'`
@@ -175,7 +241,7 @@ EOF
 }
 
 SILENT_UPDATE=0
-while getopts hlf:s option; do
+while getopts ahlf:s option; do
    case "${option}" in
    f) MINIBOOT_UPDATE_IMAGE="${OPTARG}"
       ;;
@@ -187,6 +253,9 @@ while getopts hlf:s option; do
    s) SILENT_UPDATE=1
       ;;
    h) usage
+      ;;
+   a)
+      wrong_version_check
       ;;
    *) echo "Unknown argument \"${option}\""
       usage
